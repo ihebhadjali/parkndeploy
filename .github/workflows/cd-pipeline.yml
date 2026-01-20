@@ -1,0 +1,19 @@
+on: [pull_request, workflow_dispatch]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: frontend-artifact
+          path: ./frontend-deploy
+
+      - name: Download backend artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: backend-artifact
+          path: ./backend-deploy
