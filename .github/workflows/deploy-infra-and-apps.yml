@@ -64,7 +64,9 @@ jobs:
 
   deploy_infrastructure:
     runs-on: ubuntu-latest
-    needs: build_cicd_backend, build_cicd_frontend
+    needs: 
+      - build_cicd_backend
+      - build_cicd_frontend
     environment: production
 
     outputs:
