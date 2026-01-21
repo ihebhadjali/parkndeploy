@@ -2,7 +2,6 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
-  workflow_dispatch:
 
 permissions:
   # Require write permission to Fetch an OIDC token (required for federated credential) and write it
@@ -11,13 +10,62 @@ permissions:
 
 env: 
   AZURE_RG_NAME: rg-${{ vars.PROJECT_NAME }}-${{ vars.AZURE_RESOURCE_IDENTIFIER }}
-  APP_VERSION: ${{ github.ref_name }}
+  
   
 jobs:
+  build_cicd_frontend:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+        
+    - name: Install dependencies
+      run: npm install
+      working-directory: ./frontend
+
+    - name: Build React app
+      run: npm run build
+      working-directory: ./frontend
+
+    - name: Run the linting script
+      run: npm run lint
+      working-directory: ./frontend
+
+    - name: 'Create and push the artifact'
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-build
+        path: ./frontend
+
+  build_cicd_backend:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup .NET SDK 9.0.x
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Build .NET app
+      run: dotnet build --configuration Release
+      working-directory: ./backend
+      
+    - name: 'Create and push the artifact'
+      uses: actions/upload-artifact@v4
+      with:
+        name: backend-build
+        path: ./backend
+
   deploy_infrastructure:
     runs-on: ubuntu-latest
-    needs: deploy_backend, deploy_frontend
-    environment: production # bind the job to the production environment
+    needs: build_cicd_backend, build_cicd_frontend
+    environment: production
 
     outputs:
       appServiceName: ${{ steps.bicep_deploy.outputs.appServiceName }}
@@ -49,25 +97,61 @@ jobs:
         template: ./infrastructure/main.bicep
         parameters: project=${{ vars.PROJECT_NAME }} location=${{ secrets.AZURE_REGION }} swaLocation=${{ secrets.AZURE_SWA_REGION }} identifier=${{ vars.AZURE_RESOURCE_IDENTIFIER }}
         resourceGroupName: ${{ env.AZURE_RG_NAME }}
+    
     - name: Print version
       run: echo "App version est $APP_VERSION"
-        
+  
+  deploy_frontend:
+    runs-on: ubuntu-latest
+    needs: deploy_infrastructure
+    environment: production
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download a single artifact
+      uses: actions/download-artifact@v5
+      with:
+        name: frontend-build
+        path: ./frontend
+
+    - name: Login to Azure 
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }} 
+
+    
+    - name: Get Static Web App deployment token
+      run: |      
+        SWA_DEPLOYMENT_TOKEN=$(az staticwebapp secrets list -n ${{ needs.deploy_infrastructure.outputs.staticWebAppName }} -o tsv --query properties.apiKey)
+        echo SWA_DEPLOYMENT_TOKEN=$SWA_DEPLOYMENT_TOKEN >> $GITHUB_ENV
+  
+    - name: Deploy frontend to Static Web App
+      uses: azure/static-web-apps-deploy@v1 
+      with:
+        azure_static_web_apps_api_token: ${{ env.SWA_DEPLOYMENT_TOKEN }}
+        app_location: ./frontend
+        action: upload
+        skip_app_build: true
+        skip_api_build: true
+
   deploy_backend:
     runs-on: ubuntu-latest
+    needs: deploy_infrastructure
     environment: production
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
     
-    - name: Setup .NET SDK 9.0.x
-      uses: actions/setup-dotnet@v4
+    - name: Download a single artifact
+      uses: actions/download-artifact@v5
       with:
-        dotnet-version: '9.0.x'
-        
-    - name: Publish the app
-      run: dotnet publish -c Release --property:PublishDir=publish # Publish the app to the API project publish folder
-      working-directory: ./backend # Specify where to find the solution file in repository
+        name: backend-build
+        path: ./backend
 
     - name: Login to Azure 
       uses: azure/login@v2
@@ -80,37 +164,4 @@ jobs:
       uses: azure/webapps-deploy@v2
       with: 
         app-name: ${{ needs.deploy_infrastructure.outputs.appServiceName }} # Access to the previous job output to get the appServiceName deployed with bicep
-        package: ./backend/ParkNDeploy.Api/publish # Path to the previously published app
-  
-  deploy_frontend:
-    runs-on: ubuntu-latest
-    environment: production
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Build the app
-      run: npm install && npm run build
-      working-directory: ./frontend    
-
-    - name: Login to Azure 
-      uses: azure/login@v2
-      with:
-        client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }} 
-    
-    - name: Get Static Web App deployment token
-      run: |      
-        SWA_DEPLOYMENT_TOKEN=$(az staticwebapp secrets list -n ${{ needs.deploy_infrastructure.outputs.staticWebAppName }} -o tsv --query properties.apiKey)
-        echo SWA_DEPLOYMENT_TOKEN=$SWA_DEPLOYMENT_TOKEN >> $GITHUB_ENV
-  
-    - name: Deploy frontend to Static Web App
-      uses: azure/static-web-apps-deploy@v1
-      with:
-        azure_static_web_apps_api_token: ${{ env.SWA_DEPLOYMENT_TOKEN }}
-        app_location: frontend/dist
-        action: upload
-        skip_app_build: true
-        skip_api_build: true
+        package: ./backend

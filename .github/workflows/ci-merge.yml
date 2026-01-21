@@ -1,12 +1,8 @@
-on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+on: [pull_request, workflow_dispatch]
   
 jobs:
   build_frontend:
     runs-on: ubuntu-latest
-    needs: deploy_infrastructure
     environment: production
     
     steps:
@@ -27,7 +23,6 @@ jobs:
 
   build_backend:
     runs-on: ubuntu-latest
-    needs: deploy_infrastructure
     environment: production
     
     steps:
